@@ -1,6 +1,7 @@
 # Random Forest on Mixed Data — PBMC as 14th Epitype
 
 This repository contains an end-to-end analysis and reproducible workflow for retraining a **Random Forest (RF)** classifier on mixed AML epitypes, treating **PBMC** as the 14th epitype.  
+For more information about the epitypes please read our upcoming publication: "Epigenocopies of genetic markers expand risk assessment in acute myeloid leukemia"
 The analysis is implemented in R, with outputs summarized in an HTML report.
 
 ---
@@ -16,31 +17,15 @@ The analysis is implemented in R, with outputs summarized in an HTML report.
 ```bash
 git clone https://github.com/<your-username>/Methylation_Classifier.git
 cd Methylation_Classifier
-2. Restore the R environment
 r
-Copy
-Edit
 install.packages("renv")
 renv::init()        # initialize if fresh
 renv::restore()     # restore packages from renv.lock
-
+```
 
 3. Add data
 
 Place full dataset please reach out directly. 
-
-4. Render the analysis
-r
-Copy
-Edit
-install.packages("rmarkdown")
-rmarkdown::render("notebooks/analysis.Rmd", output_dir = "reports")
-5. (Optional) Publish to GitHub Pages
-bash
-Copy
-Edit
-make pages   # Copies latest report to docs/index.html
-Then enable Pages in the repo settings → Deploy from /docs.
 
 This summary is based on the nested cross-validation and calibrated probability outputs in the HTML report.
 
