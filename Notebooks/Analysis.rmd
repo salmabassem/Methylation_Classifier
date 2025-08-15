@@ -1,0 +1,392 @@
+---
+title: "RF model on Mixed data with PBMC as 14th epitype"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+date: "2024-10-28"
+---
+
+# PBMCs: 
+
+## Data 
+
+
+```{r, fig.width = 15, fig.height = 10, warning = FALSE, message = FALSE}
+
+library(dplyr)
+library(randomForest)
+library(Metrics)
+library(caret)
+library(DT)
+library(ComplexHeatmap)
+source("confusion_matrix.R")
+
+
+set.seed(123)
+
+# Load and preprocess the data
+MethData <- read.csv("Beat AML and TCGA training data.csv")
+rownames(MethData) <- MethData[, 1]
+MethData <- MethData[, -c(1, 45)]
+
+Epitypes <- as.data.frame(read.csv("Beat AML and TCGA training data_Epitypes.csv"))
+rownames(Epitypes) <- Epitypes$sample.ID
+table(Epitypes$Subtype, Epitypes$Epitype)
+Epitypes <- Epitypes["Subtype"]
+
+iPlexData_Epi <- transform(merge(MethData, Epitypes, by = 0), row.names = 1)
+iPlexData_Epi$Subtype <- as.factor(iPlexData_Epi$Subtype)
+
+```
+
+# Make Mixed/Impure data usig one PBMC sample
+
+```{r}
+
+normal_PBMC <- read.csv("465k BMIQ kere PBMCs only.csv", header = TRUE, row.names = 1)
+Annotation <- read.csv("cg ID conversion.csv", header = TRUE, check.names = FALSE, row.names = 3)
+normal <- transform(merge(Annotation["check_names_for_Model"], normal_PBMC, by = 0), row.names = 1)
+
+rownames(normal) <- normal$check_names_for_Model
+normal <- normal[,-1]
+
+set.seed(123) 
+data <- iPlexData_Epi
+data <- t(data)
+data <- data[-44,]
+
+all(rownames(data) == rownames(normal))
+
+idx <- match(rownames(data), rownames(normal))
+normal <- normal[idx,]
+
+all(rownames(data) == rownames(normal))
+
+
+#average <- rowMeans(normal)
+
+for (i in 1:ncol(normal)){
+  hist(normal[,i])
+}
+
+
+average <- normal$PBMC_218
+
+y <- rownames(data)
+data <- transform(apply(data,2 , as.numeric), row.names = y)
+
+pheatmap(data, show_rownames = TRUE, show_colnames = FALSE)
+p <- pheatmap(data)
+
+roworderz <- rownames(data)[row_order(p)]
+colorderz <- p@column_order
+
+##### Creating Impure data
+
+library(ComplexHeatmap)
+
+impurity_levels <- runif(n = ncol(data), min = 0.3, max = 0.7)
+
+impure_data <- data
+y <- rownames(impure_data)
+impure_data <- transform(apply(impure_data, 2, as.numeric), row.names = y)
+impure_data <- impure_data[-44,]
+
+for (i in 1:ncol(impure_data)) {
+  impure_data[, i] <- ((1 - impurity_levels[i]) * impure_data[, i]) + (impurity_levels[i] * average)
+}
+
+
+
+draw_df <- impure_data[roworderz, ]
+pheatmap(draw_df, show_rownames = TRUE, show_colnames = FALSE, cluster_rows = FALSE)
+
+impure_data <- t(impure_data)  ## Final Impure Data
+
+impure_data <- transform(merge(impure_data, iPlexData_Epi["Subtype"], by = 0), row.names = 1)
+impure_data$Subtype <- as.character(impure_data$Subtype)
+impure_data$Subtype <- as.factor(impure_data$Subtype)
+
+
+```
+
+
+## Add PBMCs as 14th epitype to mixed data 
+
+
+```{r}
+
+tnormal <- as.data.frame(t(normal))
+tnormal$Subtype <- "Normal"
+Training_normal <- rbind(tnormal, impure_data)
+
+Training_normal$Subtype <- as.factor(Training_normal$Subtype)
+
+
+```
+
+
+
+## Using 3CV fold to train calibration Model 
+
+```{r}
+
+library(randomForest)
+library(glmnet)
+library(caret)
+library(pROC)  
+library(Metrics)  
+
+data <- Training_normal
+response <- Training_normal$Subtype
+
+ntrees <- 500  
+mtry <- 6  
+seed <- 123  
+
+
+outer_folds <- createFolds(response, k = 3, list = TRUE, returnTrain = TRUE)
+misclassification_errors <- c()
+auc_values <- c()
+brier_scores <- c()
+
+
+
+for (i in 1:length(outer_folds)) {
+  train_indices <- outer_folds[[i]]
+  train_data <- data[train_indices,]
+  test_data <- data[-train_indices,]
+  
+  class_distribution <- table(train_data$Subtype)
+  sampsize <- rep(min(class_distribution), length(class_distribution))
+  
+  rf_model <- randomForest(x = train_data[,-44], 
+                         y = train_data$Subtype, 
+                         ntree = ntrees, 
+                         mtry = mtry, 
+                        #sampsize = sampsize,  # Balanced sampling size
+                         importance = TRUE,  # Calculate variable importance
+                         proximity = TRUE,  # Calculate proximity
+                         oob.prox = TRUE,   # Out-of-bag proximity
+                         keep.forest = TRUE, 
+                         seed = 123)  # Keep the trained forest
+  
+  
+  inner_folds <- createFolds(train_data$Subtype, k = 3)
+  
+  calibration_probs <- NULL
+  calibration_labels <- NULL
+  
+  
+  for (j in 1:length(inner_folds)) {
+    inner_train <- train_data[inner_folds[[j]],]
+    inner_test <- train_data[-inner_folds[[j]],]
+    
+    class_distribution <- table(inner_train$Subtype)
+    sampsize <- rep(min(class_distribution), length(class_distribution))
+
+    
+    inner_rf <- randomForest(x = inner_train[,-44], 
+                         y = inner_train$Subtype, 
+                         ntree = ntrees, 
+                         mtry = mtry, 
+                         #sampsize = sampsize,  # Balanced sampling size
+                         importance = TRUE,  # Calculate variable importance
+                         proximity = TRUE,  # Calculate proximity
+                         oob.prox = TRUE,   # Out-of-bag proximity
+                         keep.forest = TRUE, 
+                         seed = 123)  # Keep the trained forest
+    inner_probs <- predict(inner_rf, inner_test, type = "prob")
+    
+    calibration_probs <- rbind(calibration_probs, inner_probs)
+    calibration_labels <- c(calibration_labels, as.character(inner_test$Subtype))
+  }
+
+   calibration_model <- cv.glmnet(as.matrix(calibration_probs), as.factor(calibration_labels), family = "multinomial", alpha = 0)
+   
+  
+  # Calibrate scores for the outer test set
+  test_probs <- predict(rf_model, test_data, type = "prob")
+  calibrated_scores <- predict(calibration_model, newx = as.matrix(test_probs), type = "response")
+  names <- colnames(calibrated_scores)
+  calibrated_scores <- as.data.frame(calibrated_scores)
+  colnames(calibrated_scores) <- names
+  
+  predicted_classes <- colnames(calibrated_scores)[max.col(calibrated_scores)]
+  misclassification_errors <- c(misclassification_errors, mean(as.character(predicted_classes) != as.character(test_data$Subtype)))
+  
+  # Calculate AUC
+  auc <- multiclass.roc(test_data$Subtype, calibrated_scores)$auc
+  auc_values <- c(auc_values, auc)
+  
+}
+  
+
+mean_misclassification_error <- mean(misclassification_errors)
+mean_auc <- mean(auc_values)
+
+print(mean_misclassification_error)
+print(mean_auc)
+
+```
+
+## Training the RF model and calibration Model 
+
+```{r, fig.width = 15, fig.height = 10, warning = FALSE, message = FALSE}
+
+library(glmnet)
+
+class_distribution <- table(data$Subtype)
+sampsize <- rep(min(class_distribution), length(class_distribution))
+
+
+set.seed(seed)
+Normal_Mixed_RF_model_PBMC <- randomForest(x = data[,-44], 
+                         y = data$Subtype, 
+                         ntree = ntrees, 
+                         #mtry = mtry, 
+                         sampsize = sampsize,  # Balanced sampling size
+                         importance = TRUE,  # Calculate variable importance
+                         proximity = TRUE,  # Calculate proximity
+                         oob.prox = TRUE,   # Out-of-bag proximity
+                         keep.forest = TRUE, 
+                         seed = 123)  # Keep the trained forest
+
+
+
+print(Normal_Mixed_RF_model_PBMC)
+conf_matrix(df.true = data$Subtype,Normal_Mixed_RF_model_PBMC$predicted, title = "Training Data Confusion Matrix - Mixed Model with PMBC as 14th Epitype - No calibration")
+test_probabilities <- predict(Normal_Mixed_RF_model_PBMC,  data, type = "prob")
+datatable(as.data.frame(test_probabilities))
+
+test_probabilities <- transform(merge(test_probabilities, Normal_Mixed_RF_model_PBMC$predicted, by = 0), row.names = 1)
+
+
+library(glmnet)
+
+Normal_Mixed_PBMC_calibration_model <- cv.glmnet(as.matrix(calibration_probs), 
+                                     as.factor(calibration_labels), 
+                                     family = "multinomial", 
+                                     alpha = 0)
+
+test_probabilities <- predict(Normal_Mixed_RF_model_PBMC, data, type = "prob")
+calibrated_probs <- predict(Normal_Mixed_PBMC_calibration_model, newx = as.matrix(test_probabilities), type = "response")
+names <- colnames(calibrated_probs)
+calibrated_probs_df <- as.data.frame(calibrated_probs)
+colnames(calibrated_probs_df) <- names
+datatable(calibrated_probs_df)
+
+
+calibrated_probs_df$calls <-  colnames(calibrated_probs_df)[max.col(calibrated_probs_df)]
+
+unique(data$Subtype)
+conf_matrix(df.true = data$Subtype, df.pred = calibrated_probs_df$calls,  title = "Training Data Confusion Matrix - Mixed Model with PMBC as 14th Epitype  - Calibrated Cells")
+
+#write.csv(calibrated_probs_df , "RF Pure Model with Normal Subtype Probabilities - Training data - calibrated.csv")
+
+
+
+```
+
+## Run on Alliance 
+
+
+
+## Final Mixed Model
+
+```{r}
+
+Run_Mixed_Model <- function(data = test_data){
+  
+#load("Normal_Mixed_RF_model_PBMC.Rda")  
+#load("Normal_Mixed_PBMC_calibration_model.Rda")
+
+test_probabilities <- predict(Normal_Mixed_RF_model_PBMC, test_data, type = "prob")
+calibrated_probs <- predict(Normal_Mixed_PBMC_calibration_model, newx = as.matrix(test_probabilities), type = "response")
+names <- colnames(calibrated_probs)
+calibrated_probs_df <- as.data.frame(calibrated_probs)
+colnames(calibrated_probs_df) <- names
+datatable(calibrated_probs_df)
+
+calibrated_probs_df$calls <-  colnames(calibrated_probs_df)[max.col(calibrated_probs_df)]
+return(calibrated_probs_df)
+} 
+
+
+```
+
+## Test on the Alliance 
+
+
+```{r, fig.width = 15, fig.height = 10, warning = FALSE, message = FALSE}
+
+setwd("C:/Users/abde34/Documents/Salma/Me-iPLEX Shiny/AML training data Salma")
+Alliance <- read.csv("Alliance_shiny_output_New.csv", row.names = 1)
+
+hist(Alliance$Blanks)
+table(Alliance$Blanks)  # Remove above 20 blanks 
+
+Alliance <- filter(Alliance, Alliance$Blanks < 21)
+test_data <- Alliance[,1:43]
+
+
+Alliance_Mixed <- Run_Mixed_Model(test_data)
+Pure_no_calibration_calls <- predict(Normal_Mixed_RF_model_PBMC, test_data)
+
+Alliance$Subtype <- factor( Alliance$Subtype, levels = c("Normal" , "TET" , "MLLsub2" , "NPM+DNMT3A-R882" , "NORMAL-LIKE GENOMIC INSTABILITY" , "GENOMIC INSTABILITY" , "IDH+NPM" ,
+                                                "NPM" , "CBF-Beta/inv(16)" , "CEBPA" , "AML1-ETO/t(8;21)" , "PML-RAR/t(15;17)"  , "IDH" , "MLLsub1")) 
+
+
+
+conf_matrix(df.true = Alliance$Subtype, df.pred = Pure_no_calibration_calls, title = "Alliance Data - Mixed Model with PBMC as 14th - Uncalibrated", true.lab = "SHINY app", pred.lab = "Normal Model Uncalibrated Cells")
+df_All_Un <- table(Alliance$Subtype, Pure_no_calibration_calls)
+
+conf_matrix(df.true = Alliance$Subtype, df.pred = Alliance_Mixed$calls, title = "Alliance Data - Mixed Model with PBMC as 14th- Calibrated", true.lab = "SHINY app", pred.lab = "Normal Model Calibrated Cells")
+datatable(Alliance_Mixed)
+
+#write.csv(Alliance_Mixed, file = "Mixed Model with PBMC as 14th Normal Epitype Calibrated Probabilities.csv")
+
+
+
+```
+
+## Test on Sumitomo 
+
+
+```{r, fig.width = 10, fig.height = 10}
+
+setwd("C:/Users/abde34/Documents/Salma/Me-iPLEX Shiny/RF trial 2 Salma/Sumitomo samples")
+
+list <- list()
+list[[1]] <- read.csv("Oakes_05032_subtyping.csv", row.names = 1)
+list[[2]] <- read.csv("071124_AMLiPLEX_Repeats_Subtyping.csv", row.names = 1)
+list[[3]] <- read.csv("101924_Chris_AML_Subtyping.csv", row.names = 1)
+
+Sumo_Samples <- do.call(rbind, list)
+
+#write.csv(Sumo_Samples, file = "All Sumitomo samples SHINY calls.csv")
+
+test_data <- Sumo_Samples[,c(1:43)]
+
+setwd("C:/Users/abde34/Documents/Salma/Me-iPLEX Shiny/AML training data Salma")
+
+Batch1_pure <- Run_Mixed_Model(test_data)
+#write.csv(Batch1_pure , file = "Mixed Model with PBMC as 14th - Sumitomo samples - Calibrated probs.csv")
+
+Sumo_Samples$Subtype <- factor( Sumo_Samples$Subtype, levels = c("Normal" , "TET" , "MLLsub2" , "NPM+DNMT3A-R882" , "NORMAL-LIKE GENOMIC INSTABILITY" , "GENOMIC INSTABILITY" , "IDH+NPM" ,
+                                                "NPM" , "CBF-Beta/inv(16)" , "CEBPA" , "AML1-ETO/t(8;21)" , "PML-RAR/t(15;17)"  , "IDH" , "MLLsub1")) 
+
+
+
+conf_matrix(df.true = Sumo_Samples$Subtype, df.pred = Batch1_pure$calls, title = "Sumi samples - Mixed Model with PBMC as 14th - Calibrated", true.lab = "SHINY output")
+
+
+
+Batch1_pure <- predict(Normal_Mixed_RF_model_PBMC, test_data)  ## RF model trained on 14 subgroups no calibration 
+conf_matrix(df.true = Sumo_Samples$Subtype, df.pred = Batch1_pure, title = "Sumi Samples - Mixed Model with PBMC as 14th - Uncalibrated" , true.lab = "SHINY output")
+
+
+```
