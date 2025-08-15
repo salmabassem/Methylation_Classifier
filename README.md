@@ -1,7 +1,7 @@
-# Random Forest on Mixed Data — PBMC as 14th Epitype
+# Random Forest Classifier on our Methylation i-PLEX 42 CpGs to classify Epitypes
 
 This repository contains an end-to-end analysis and reproducible workflow for retraining a **Random Forest (RF)** classifier on mixed AML epitypes, treating **PBMC** as the 14th epitype.  
-For more information about the epitypes please read our upcoming publication: "Epigenocopies of genetic markers expand risk assessment in acute myeloid leukemia"
+For more information about the epitypes please read our upcoming publication: "DNA methylation epitypes highlight underlying developmental and disease pathways in acute myeloid leukemia" and our upcoming publication "Epigenocopies of genetic markers expand risk assessment in acute myeloid leukemia"
 The analysis is implemented in R, with outputs summarized in an HTML report.
 
 ---
@@ -24,7 +24,6 @@ renv::restore()     # restore packages from renv.lock
 ```
 
 3. Add data
-
 Place full dataset please reach out directly. 
 
 This summary is based on the nested cross-validation and calibrated probability outputs in the HTML report.
@@ -38,8 +37,4 @@ This summary is based on the nested cross-validation and calibrated probability 
 | **Balanced sampling**           | Yes         | Each class matched to smallest class size |
 | **Calibration method**          | Multinomial logistic regression (elastic net, α = 0) | Improved probability estimates |
 
-**Performance highlights**
-- Strong separation across all **14 epitypes** (including PBMC).
-- Minimal confusion between classes in the final confusion matrix.
-- Calibration improved reliability of predicted probabilities.
-- Top features identified via Gini importance; biological relevance discussed in the report.
+
