@@ -16,7 +16,7 @@ The analysis is implemented in R, with outputs summarized in an HTML report.
 
 ### 1. Clone the repository
 ```bash
-git clone https://github.com/<your-username>/Methylation_Classifier.git
+git clone https://github.com/salmabassem/Methylation_Classifier.git
 cd Methylation_Classifier
 r
 install.packages("renv")
